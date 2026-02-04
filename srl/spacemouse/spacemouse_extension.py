@@ -28,6 +28,18 @@ from srl.spacemouse.ui_utils import xyz_plot_builder, combo_floatfield_slider_bu
 
 instance = None
 SPNAVCAM_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "spacemouse_viewport.py")
+DEFAULT_SETTINGS = {
+    "engage": False,
+    "device_name": None,
+    "mode_translation": True,
+    "mode_rotation": True,
+    "smoothing_factor": 0.5,
+    "softmax_temp": 0.85,
+    "translation_sensitivity": 1.0,
+    "rotation_sensitivity": 1.0,
+    "translation_deadband": 0.1,
+    "rotation_deadband": 0.1,
+}
 
 
 def get_global_spacemouse() -> Optional[SpaceMouse]:
@@ -59,6 +71,8 @@ class SpaceMouseExtension(omni.ext.IExt):
 
         self._settings_path = self._get_user_settings_path()
         self._settings_data = self._load_user_settings(self._settings_path)
+        self._suppress_setting_write = False
+        self._reset_confirm_window = None
         frame = self.get_frame(index=0)
         self._models = {}
         self.build_control_ui(frame)
@@ -79,6 +93,7 @@ class SpaceMouseExtension(omni.ext.IExt):
         self.engage_sub_handle = self._models["Engage"][0].subscribe_value_changed_fn(self._engage_value_changed)
         global instance
         instance = self
+        self._auto_engage_if_requested()
 
     def _build_ui(self, name, title, doc_link, overview, file_path, number_of_extra_frames, window_width):
         self._window = omni.ui.Window(
@@ -110,7 +125,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 frame.title = "Settings"
                 frame.visible = True
 
-                engage_default = bool(self._get_setting("engage", False))
+                engage_default = bool(self._get_setting("engage", DEFAULT_SETTINGS["engage"]))
                 device_default_name = self._get_setting("device_name", DEVICE_NAMES[0])
                 device_default_index = 0
                 if device_default_name in DEVICE_NAMES:
@@ -130,8 +145,8 @@ class SpaceMouseExtension(omni.ext.IExt):
                     ui.Button("SpacemouseCam", clicked_fn=self._run_spnavcam_script)
 
 
-                trans_mode_default = bool(self._get_setting("mode_translation", True))
-                rot_mode_default = bool(self._get_setting("mode_rotation", True))
+                trans_mode_default = bool(self._get_setting("mode_translation", DEFAULT_SETTINGS["mode_translation"]))
+                rot_mode_default = bool(self._get_setting("mode_rotation", DEFAULT_SETTINGS["mode_rotation"]))
                 dict = {
                     "label": "Modes",
                     "text": ["Translation", "Rotation"],
@@ -144,7 +159,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Smoothing Factor",
                     "tooltip": ["How much to weight historical signal against current signal. Higher values will consider the current signal less and less. `alpha` in an exponential weighted average of the control signal.", ""],
-                    "default_val": float(self._get_setting("smoothing_factor", 0.5)),
+                    "default_val": float(self._get_setting("smoothing_factor", DEFAULT_SETTINGS["smoothing_factor"])),
                     "min": 0.0,
                     "max": 0.99
                 }
@@ -154,7 +169,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Softmax Temperature",
                     "tooltip": ["How much to exagerate differences in the components of motion. Smaller values make the strongest component dominate, while larger values will be less and less different from the original input.", ""],
-                    "default_val": float(self._get_setting("softmax_temp", 0.85)),
+                    "default_val": float(self._get_setting("softmax_temp", DEFAULT_SETTINGS["softmax_temp"])),
                     "min": 0.01,
                     "max": 2.
                 }
@@ -164,7 +179,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Translation Sensitivity",
                     "tooltip": ["Multiplier applied to translation inputs", ""],
-                    "default_val": float(self._get_setting("translation_sensitivity", 1.0)),
+                    "default_val": float(self._get_setting("translation_sensitivity", DEFAULT_SETTINGS["translation_sensitivity"])),
                     "min": 0,
                     "max": 2.
                 }
@@ -173,7 +188,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Rotation Sensitivity",
                     "tooltip": ["Multiplier applied to rotation inputs", ""],
-                    "default_val": float(self._get_setting("rotation_sensitivity", 1.0)),
+                    "default_val": float(self._get_setting("rotation_sensitivity", DEFAULT_SETTINGS["rotation_sensitivity"])),
                     "min": 0,
                     "max": 2.
                 }
@@ -183,7 +198,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Translation Deadband",
                     "tooltip": ["Threshold below which to zero translation inputs component wise", ""],
-                    "default_val": float(self._get_setting("translation_deadband", 0.1)),
+                    "default_val": float(self._get_setting("translation_deadband", DEFAULT_SETTINGS["translation_deadband"])),
                     "min": 0,
                     "max": .8
                 }
@@ -193,12 +208,16 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Rotation Deadband",
                     "tooltip": ["Threshold below which to zero rotation inputs component wise", ""],
-                    "default_val": float(self._get_setting("rotation_deadband", 0.1)),
+                    "default_val": float(self._get_setting("rotation_deadband", DEFAULT_SETTINGS["rotation_deadband"])),
                     "min": 0,
                     "max": .8
                 }
                 self._models["Rotation Deadband"] = combo_floatfield_slider_builder(**dict)
                 self._models["Rotation Deadband"][0].add_value_changed_fn(partial(self._on_deadband_event, "rot"))
+
+                with ui.HStack():
+                    ui.Label("Reset", width=LABEL_WIDTH, alignment=ui.Alignment.LEFT_CENTER)
+                    ui.Button("Reset Settings to Default", clicked_fn=self._open_reset_confirm)
 
         return
 
@@ -362,8 +381,9 @@ class SpaceMouseExtension(omni.ext.IExt):
         cb_model.set_value(False)
 
     async def _on_disengage_event_async(self):
-        self._device.close()
-        self._device = None
+        if self._device:
+            self._device.close()
+            self._device = None
 
     def _engage_value_changed(self, model):
         self.toggle_plotting_event_subscription(model.as_bool)
@@ -377,7 +397,19 @@ class SpaceMouseExtension(omni.ext.IExt):
 
     def _set_setting(self, name: str, value):
         self._settings_data[name] = value
-        self._save_user_settings(self._settings_path, self._settings_data)
+        if not self._suppress_setting_write:
+            self._save_user_settings(self._settings_path, self._settings_data)
+
+    def _auto_engage_if_requested(self):
+        try:
+            if not self._get_setting("engage", DEFAULT_SETTINGS["engage"]):
+                return
+            cb_model, _ = self._models["Engage"]
+            if not cb_model.as_bool:
+                cb_model.set_value(True)
+            self._on_engage_event(cb_model)
+        except Exception as exc:
+            carb.log_warn(f"Auto engage failed: {exc}")
 
     def _get_user_settings_path(self) -> str:
         tokens = carb.tokens.get_tokens_interface()
@@ -400,6 +432,56 @@ class SpaceMouseExtension(omni.ext.IExt):
                 json.dump(data, handle, indent=2, sort_keys=True)
         except Exception as exc:
             carb.log_warn(f"Failed to write settings file {path}: {exc}")
+
+    def _reset_settings_to_defaults(self):
+        defaults = dict(DEFAULT_SETTINGS)
+        defaults["device_name"] = DEVICE_NAMES[0] if DEVICE_NAMES else None
+        self._settings_data = defaults
+        self._save_user_settings(self._settings_path, self._settings_data)
+
+        cb_model, dropdown_model = self._models["Engage"]
+        self._suppress_setting_write = True
+        cb_model.set_value(False)
+        dropdown_model.model.get_item_value_model().set_value(0)
+        self._on_engage_event(cb_model)
+
+        modes = self._models["Modes"]
+        modes[0].set_value(DEFAULT_SETTINGS["mode_translation"])
+        modes[1].set_value(DEFAULT_SETTINGS["mode_rotation"])
+
+        self._models["Smoothing Factor"][0].set_value(DEFAULT_SETTINGS["smoothing_factor"])
+        self._models["Softmax Temperature"][0].set_value(DEFAULT_SETTINGS["softmax_temp"])
+        self._models["Translation Sensitivity"][0].set_value(DEFAULT_SETTINGS["translation_sensitivity"])
+        self._models["Rotation Sensitivity"][0].set_value(DEFAULT_SETTINGS["rotation_sensitivity"])
+        self._models["Translation Deadband"][0].set_value(DEFAULT_SETTINGS["translation_deadband"])
+        self._models["Rotation Deadband"][0].set_value(DEFAULT_SETTINGS["rotation_deadband"])
+        self._suppress_setting_write = False
+
+    def _open_reset_confirm(self):
+        carb.log_info("[srl.spacemouse] Open reset confirmation")
+        if self._reset_confirm_window is not None:
+            self._reset_confirm_window.visible = True
+            return
+        self._reset_confirm_window = ui.Window(
+            "Confirm Reset",
+            width=360,
+            height=140,
+            visible=True,
+        )
+        with self._reset_confirm_window.frame:
+            with ui.VStack(spacing=10):
+                ui.Label("Reset all SpaceMouse settings to defaults?")
+                with ui.HStack(spacing=10):
+                    ui.Button("Cancel", clicked_fn=self._close_reset_confirm)
+                    ui.Button("Reset", clicked_fn=self._confirm_reset)
+
+    def _close_reset_confirm(self):
+        if self._reset_confirm_window is not None:
+            self._reset_confirm_window.visible = False
+
+    def _confirm_reset(self):
+        self._reset_settings_to_defaults()
+        self._close_reset_confirm()
 
     def _run_spnavcam_script(self):
         script_path = SPNAVCAM_SCRIPT_PATH
