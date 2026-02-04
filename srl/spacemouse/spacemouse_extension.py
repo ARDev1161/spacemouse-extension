@@ -4,6 +4,7 @@
 
 
 import os
+import json
 from typing import Optional
 from srl.spacemouse.spacemouse import SpaceMouse
 from srl.spacemouse.spacemousefilter import SpaceMouseFilter
@@ -56,7 +57,8 @@ class SpaceMouseExtension(omni.ext.IExt):
             window_width=350,
         )
 
-        self._settings = carb.settings.get_settings()
+        self._settings_path = self._get_user_settings_path()
+        self._settings_data = self._load_user_settings(self._settings_path)
         frame = self.get_frame(index=0)
         self._models = {}
         self.build_control_ui(frame)
@@ -108,11 +110,18 @@ class SpaceMouseExtension(omni.ext.IExt):
                 frame.title = "Settings"
                 frame.visible = True
 
+                engage_default = bool(self._get_setting("engage", False))
+                device_default_name = self._get_setting("device_name", DEVICE_NAMES[0])
+                device_default_index = 0
+                if device_default_name in DEVICE_NAMES:
+                    device_default_index = DEVICE_NAMES.index(device_default_name)
+
                 dict = {
                     "label": "Engage",
                     "tooltip": "Connect and enable the choosen device",
-                    "on_clicked_fn": [self._on_engage_event, lambda x: None, None],
-                    "items": DEVICE_NAMES
+                    "on_clicked_fn": [self._on_engage_event, self._on_device_selected],
+                    "items": DEVICE_NAMES,
+                    "default_val": [engage_default, device_default_index],
                 }
                 self._models["Engage"] = combo_cb_dropdown_builder(**dict)
 
@@ -121,11 +130,13 @@ class SpaceMouseExtension(omni.ext.IExt):
                     ui.Button("SpacemouseCam", clicked_fn=self._run_spnavcam_script)
 
 
+                trans_mode_default = bool(self._get_setting("mode_translation", True))
+                rot_mode_default = bool(self._get_setting("mode_rotation", True))
                 dict = {
                     "label": "Modes",
                     "text": ["Translation", "Rotation"],
                     "count": 2,
-                    "default_val": [True, True],
+                    "default_val": [trans_mode_default, rot_mode_default],
                     "on_clicked_fn": [partial(self._on_modes_event, "trans"), partial(self._on_modes_event, "rot")],
                 }
                 self._models["Modes"] = multi_cb_builder(**dict)
@@ -133,7 +144,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Smoothing Factor",
                     "tooltip": ["How much to weight historical signal against current signal. Higher values will consider the current signal less and less. `alpha` in an exponential weighted average of the control signal.", ""],
-                    "default_val": .5,
+                    "default_val": float(self._get_setting("smoothing_factor", 0.5)),
                     "min": 0.0,
                     "max": 0.99
                 }
@@ -143,7 +154,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Softmax Temperature",
                     "tooltip": ["How much to exagerate differences in the components of motion. Smaller values make the strongest component dominate, while larger values will be less and less different from the original input.", ""],
-                    "default_val": .85,
+                    "default_val": float(self._get_setting("softmax_temp", 0.85)),
                     "min": 0.01,
                     "max": 2.
                 }
@@ -153,7 +164,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Translation Sensitivity",
                     "tooltip": ["Multiplier applied to translation inputs", ""],
-                    "default_val": 1,
+                    "default_val": float(self._get_setting("translation_sensitivity", 1.0)),
                     "min": 0,
                     "max": 2.
                 }
@@ -162,7 +173,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Rotation Sensitivity",
                     "tooltip": ["Multiplier applied to rotation inputs", ""],
-                    "default_val": 1,
+                    "default_val": float(self._get_setting("rotation_sensitivity", 1.0)),
                     "min": 0,
                     "max": 2.
                 }
@@ -172,7 +183,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Translation Deadband",
                     "tooltip": ["Threshold below which to zero translation inputs component wise", ""],
-                    "default_val": .1,
+                    "default_val": float(self._get_setting("translation_deadband", 0.1)),
                     "min": 0,
                     "max": .8
                 }
@@ -182,7 +193,7 @@ class SpaceMouseExtension(omni.ext.IExt):
                 dict = {
                     "label": "Rotation Deadband",
                     "tooltip": ["Threshold below which to zero rotation inputs component wise", ""],
-                    "default_val": 0.1,
+                    "default_val": float(self._get_setting("rotation_deadband", 0.1)),
                     "min": 0,
                     "max": .8
                 }
@@ -268,26 +279,34 @@ class SpaceMouseExtension(omni.ext.IExt):
     def _on_modes_event(self, kind, model):
         if kind == "trans":
             self.filter.translation_enabled = model
+            self._set_setting("mode_translation", bool(model))
         elif kind == "rot":
             self.filter.rotation_enabled = model
+            self._set_setting("mode_rotation", bool(model))
 
     def _on_sensitivity_event(self, kind, model):
         if kind == "trans":
             self.filter.translation_modifier = model.get_value_as_float()
+            self._set_setting("translation_sensitivity", self.filter.translation_modifier)
         elif kind == "rot":
             self.filter.rotation_modifier = model.get_value_as_float()
+            self._set_setting("rotation_sensitivity", self.filter.rotation_modifier)
 
     def _on_smoothing_event(self, model):
         self.filter.smoothing_factor = model.get_value_as_float()
+        self._set_setting("smoothing_factor", self.filter.smoothing_factor)
 
     def _on_deadband_event(self, kind, model):
         if kind == "trans":
             self.filter.translation_deadband = model.get_value_as_float()
+            self._set_setting("translation_deadband", self.filter.translation_deadband)
         elif kind == "rot":
             self.filter.rotation_deadband = model.get_value_as_float()
+            self._set_setting("rotation_deadband", self.filter.rotation_deadband)
 
     def _on_softmax_event(self, kind, model):
         self.filter.softmax_temp = model.get_value_as_float()
+        self._set_setting("softmax_temp", self.filter.softmax_temp)
 
     def _on_engage_event(self, model):
         cb_model, dropdown_model = self._models["Engage"]
@@ -348,6 +367,39 @@ class SpaceMouseExtension(omni.ext.IExt):
 
     def _engage_value_changed(self, model):
         self.toggle_plotting_event_subscription(model.as_bool)
+        self._set_setting("engage", bool(model.as_bool))
+
+    def _on_device_selected(self, device_name):
+        self._set_setting("device_name", device_name)
+
+    def _get_setting(self, name: str, default):
+        return self._settings_data.get(name, default)
+
+    def _set_setting(self, name: str, value):
+        self._settings_data[name] = value
+        self._save_user_settings(self._settings_path, self._settings_data)
+
+    def _get_user_settings_path(self) -> str:
+        tokens = carb.tokens.get_tokens_interface()
+        user_config_dir = tokens.resolve("${user_config_dir}")
+        return os.path.join(user_config_dir, "srl.spacemouse", "settings.json")
+
+    def _load_user_settings(self, path: str) -> dict:
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    return json.load(handle)
+        except Exception as exc:
+            carb.log_warn(f"Failed to read settings file {path}: {exc}")
+        return {}
+
+    def _save_user_settings(self, path: str, data: dict):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2, sort_keys=True)
+        except Exception as exc:
+            carb.log_warn(f"Failed to write settings file {path}: {exc}")
 
     def _run_spnavcam_script(self):
         script_path = SPNAVCAM_SCRIPT_PATH
