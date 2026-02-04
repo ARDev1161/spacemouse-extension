@@ -105,7 +105,8 @@ class SpaceMouseFPV:
 
         # ensure camera exists
         if not self._stage.GetPrimAtPath(CAM_PATH).IsValid():
-            UsdGeom.Camera.Define(self._stage, CAM_PATH)
+            cam = UsdGeom.Camera.Define(self._stage, CAM_PATH)
+            cam.GetFocalLengthAttr().Set(15.0)
 
         # make camera active
         self._vp.camera_path = str(CAM_PATH)
