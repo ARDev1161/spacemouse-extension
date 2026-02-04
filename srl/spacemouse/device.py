@@ -178,3 +178,7 @@ DEVICE_SPECS = {
 }
 
 DEVICE_NAMES = list(DEVICE_SPECS.keys())
+_default_device = "3Dconnexion Universal Receiver"
+if _default_device in DEVICE_NAMES:
+    DEVICE_NAMES.remove(_default_device)
+    DEVICE_NAMES.insert(0, _default_device)
