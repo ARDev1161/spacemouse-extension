@@ -14,6 +14,7 @@ import carb
 
 import omni.ui as ui
 from omni.kit.menu.utils import add_menu_items, remove_menu_items, MenuItemDescription
+from omni.kit.window.property.templates import LABEL_WIDTH
 import weakref
 
 import omni.ext
@@ -25,6 +26,7 @@ from functools import partial
 from srl.spacemouse.ui_utils import xyz_plot_builder, combo_floatfield_slider_builder,  multi_cb_builder, combo_cb_dropdown_builder
 
 instance = None
+SPNAVCAM_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "spacemouse_viewport.py")
 
 
 def get_global_spacemouse() -> Optional[SpaceMouse]:
@@ -113,6 +115,10 @@ class SpaceMouseExtension(omni.ext.IExt):
                     "items": DEVICE_NAMES
                 }
                 self._models["Engage"] = combo_cb_dropdown_builder(**dict)
+
+                with ui.HStack():
+                    ui.Label("Script", width=LABEL_WIDTH, alignment=ui.Alignment.LEFT_CENTER)
+                    ui.Button("SpacemouseCam", clicked_fn=self._run_spnavcam_script)
 
 
                 dict = {
@@ -342,6 +348,19 @@ class SpaceMouseExtension(omni.ext.IExt):
 
     def _engage_value_changed(self, model):
         self.toggle_plotting_event_subscription(model.as_bool)
+
+    def _run_spnavcam_script(self):
+        script_path = SPNAVCAM_SCRIPT_PATH
+        if not os.path.isfile(script_path):
+            carb.log_error(f"Script not found: {script_path}")
+            return
+        try:
+            with open(script_path, "r", encoding="utf-8") as handle:
+                code = handle.read()
+            globals_dict = {"__file__": script_path, "__name__": "__main__"}
+            exec(compile(code, script_path, "exec"), globals_dict)
+        except Exception as exc:
+            carb.log_error(f"Failed to run {script_path}: {exc}")
 
     def on_shutdown(self):
         self.engage_sub_handle.unsubscribe()
