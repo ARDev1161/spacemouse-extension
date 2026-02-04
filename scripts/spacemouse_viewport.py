@@ -93,15 +93,25 @@ class SpaceMouseFPV:
 
         self._sp = get_global_spacemouse()
         if self._sp is None:
-            raise RuntimeError("SpaceMouse не активирован. В Extension Manager включи srl.spacemouse.")
+            raise RuntimeError("SpaceMouse is not active. Enable srl.spacemouse in the Extension Manager.")
 
         self._vp = viewport_utils.get_active_viewport()
         if self._vp is None:
-            raise RuntimeError("Не найден активный viewport. Кликни по viewport и запусти снова.")
+            raise RuntimeError("No active viewport found. Click a viewport and run again.")
 
         self._stage = self._vp.stage
         if self._stage is None:
-            raise RuntimeError("Stage ещё не доступен (подожди загрузки).")
+            raise RuntimeError("Stage is not ready yet. Wait for the stage to load and try again.")
+
+        # capture current active camera transform before switching cameras
+        active_cam_path = self._vp.camera_path
+        if not active_cam_path:
+            raise RuntimeError("Active camera is not ready yet. Wait and try again.")
+        active_cam_prim = self._stage.GetPrimAtPath(active_cam_path)
+        if not active_cam_prim.IsValid():
+            raise RuntimeError("Active camera prim not found yet. Wait and try again.")
+        active_cam_xf = UsdGeom.Xformable(active_cam_prim)
+        M0 = active_cam_xf.ComputeLocalToWorldTransform(self._vp.time)
 
         # ensure camera exists
         if not self._stage.GetPrimAtPath(CAM_PATH).IsValid():
@@ -116,8 +126,7 @@ class SpaceMouseFPV:
         self._xformable.ClearXformOpOrder()
         self._op = self._xformable.AddTransformOp()
 
-        # init pose from current viewport transform
-        M0 = Gf.Matrix4d(self._vp.transform)
+        # init pose from previous viewport transform
         self._pos = M0.ExtractTranslation()
         rot0 = M0.ExtractRotation()
         self._q = quat_normalize(rotation_to_quat(rot0))

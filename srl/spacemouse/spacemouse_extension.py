@@ -16,6 +16,7 @@ import carb
 import omni.ui as ui
 from omni.kit.menu.utils import add_menu_items, remove_menu_items, MenuItemDescription
 from omni.kit.window.property.templates import LABEL_WIDTH
+from omni.kit.window.extensions import SimpleCheckBox
 import weakref
 
 import omni.ext
@@ -31,6 +32,7 @@ SPNAVCAM_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "scri
 DEFAULT_SETTINGS = {
     "engage": False,
     "device_name": None,
+    "auto_script": False,
     "mode_translation": True,
     "mode_rotation": True,
     "smoothing_factor": 0.5,
@@ -73,6 +75,9 @@ class SpaceMouseExtension(omni.ext.IExt):
         self._settings_data = self._load_user_settings(self._settings_path)
         self._suppress_setting_write = False
         self._reset_confirm_window = None
+        self._script_globals = None
+        self._auto_script_subscription = None
+        self._auto_script_tries = 0
         frame = self.get_frame(index=0)
         self._models = {}
         self.build_control_ui(frame)
@@ -143,6 +148,12 @@ class SpaceMouseExtension(omni.ext.IExt):
                 with ui.HStack():
                     ui.Label("Script", width=LABEL_WIDTH, alignment=ui.Alignment.LEFT_CENTER)
                     ui.Button("SpacemouseCam", clicked_fn=self._run_spnavcam_script)
+                    ui.Spacer(width=8)
+                    auto_script_default = bool(self._get_setting("auto_script", DEFAULT_SETTINGS["auto_script"]))
+                    auto_model = ui.SimpleBoolModel(default_value=auto_script_default)
+                    SimpleCheckBox(auto_script_default, self._on_auto_script_changed, model=auto_model)
+                    ui.Label("Auto Run", width=80, alignment=ui.Alignment.LEFT_CENTER)
+                    self._models["Auto Script"] = auto_model
 
 
                 trans_mode_default = bool(self._get_setting("mode_translation", DEFAULT_SETTINGS["mode_translation"]))
@@ -368,6 +379,8 @@ class SpaceMouseExtension(omni.ext.IExt):
             self._device.set_rotation_callback(self.filter._rotation_modifier)
             self._device.set_unexpected_close_callback(self._on_unexpected_close)
             self._device.run()
+            if self._get_setting("auto_script", DEFAULT_SETTINGS["auto_script"]):
+                self._request_auto_script_start()
             return True
         except RuntimeError:
             carb.log_error(f"Unable to open device { spec.name }. Did you plug in the device, set up spacenavd and udev rules correctly?")
@@ -391,6 +404,35 @@ class SpaceMouseExtension(omni.ext.IExt):
 
     def _on_device_selected(self, device_name):
         self._set_setting("device_name", device_name)
+
+    def _on_auto_script_changed(self, model):
+        enabled = bool(model)
+        self._set_setting("auto_script", enabled)
+        if not enabled:
+            self._cancel_auto_script_start()
+
+    def _request_auto_script_start(self):
+        if self._auto_script_subscription is not None:
+            return
+        self._auto_script_tries = -10
+        self._auto_script_subscription = (
+            omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(self._auto_script_tick)
+        )
+
+    def _cancel_auto_script_start(self):
+        if self._auto_script_subscription is not None:
+            self._auto_script_subscription = None
+
+    def _auto_script_tick(self, e: carb.events.IEvent):
+        self._auto_script_tries += 1
+        if self._auto_script_tries < 0:
+            return
+        if self._run_spnavcam_script(quiet=True):
+            self._auto_script_subscription = None
+            return
+        if self._auto_script_tries > 600:
+            carb.log_warn("Auto Run: failed to start script after multiple attempts.")
+            self._auto_script_subscription = None
 
     def _get_setting(self, name: str, default):
         return self._settings_data.get(name, default)
@@ -483,18 +525,29 @@ class SpaceMouseExtension(omni.ext.IExt):
         self._reset_settings_to_defaults()
         self._close_reset_confirm()
 
-    def _run_spnavcam_script(self):
+    def _run_spnavcam_script(self, quiet: bool = False):
         script_path = SPNAVCAM_SCRIPT_PATH
         if not os.path.isfile(script_path):
             carb.log_error(f"Script not found: {script_path}")
-            return
+            return False
         try:
             with open(script_path, "r", encoding="utf-8") as handle:
                 code = handle.read()
-            globals_dict = {"__file__": script_path, "__name__": "__main__"}
-            exec(compile(code, script_path, "exec"), globals_dict)
+            if self._script_globals is None:
+                self._script_globals = {"__file__": script_path, "__name__": "__main__"}
+            exec(compile(code, script_path, "exec"), self._script_globals)
+            return True
         except Exception as exc:
+            msg = str(exc)
+            if quiet and (
+                "Stage is not ready yet" in msg
+                or "No active viewport found" in msg
+                or "Active camera is not ready yet" in msg
+                or "Active camera prim not found yet" in msg
+            ):
+                return False
             carb.log_error(f"Failed to run {script_path}: {exc}")
+            return False
 
     def on_shutdown(self):
         self.engage_sub_handle.unsubscribe()
