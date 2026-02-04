@@ -26,6 +26,7 @@ from omni.isaac.core import World
 from functools import partial
 
 from srl.spacemouse.ui_utils import xyz_plot_builder, combo_floatfield_slider_builder,  multi_cb_builder, combo_cb_dropdown_builder
+from srl.spacemouse.camera_settings import clear_camera_settings
 
 instance = None
 SPNAVCAM_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "spacemouse_viewport.py")
@@ -480,6 +481,7 @@ class SpaceMouseExtension(omni.ext.IExt):
         defaults["device_name"] = DEVICE_NAMES[0] if DEVICE_NAMES else None
         self._settings_data = defaults
         self._save_user_settings(self._settings_path, self._settings_data)
+        clear_camera_settings()
 
         cb_model, dropdown_model = self._models["Engage"]
         self._suppress_setting_write = True

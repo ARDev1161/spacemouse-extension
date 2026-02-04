@@ -5,6 +5,11 @@ from pxr import UsdGeom, Gf, Sdf
 import carb
 
 from srl.spacemouse.spacemouse_extension import get_global_spacemouse
+from srl.spacemouse.camera_settings import (
+    apply_saved_camera_settings,
+    save_camera_settings_if_changed,
+    save_current_camera_settings,
+)
 
 # =========================
 # TUNING
@@ -28,6 +33,7 @@ DEADZONE = 1e-6
 DT_MAX = 0.05            # clamp big dt on lag frames
 
 DEBUG_EVERY_N = 60       # print once per N frames (0 disables)
+
 
 
 def _v3(x, y, z):
@@ -126,12 +132,17 @@ class SpaceMouseFPV:
         self._xformable.ClearXformOpOrder()
         self._op = self._xformable.AddTransformOp()
 
+        # apply saved camera settings (focal length, apertures, clipping, etc.)
+        apply_saved_camera_settings(cam_prim)
+
         # init pose from previous viewport transform
         self._pos = M0.ExtractTranslation()
         rot0 = M0.ExtractRotation()
         self._q = quat_normalize(rotation_to_quat(rot0))
 
         self._frame = 0
+        self._last_camera_settings = {}
+        self._settings_save_stride = 30
         self._write_pose()
 
         stream = self._app.get_post_update_event_stream()
@@ -146,6 +157,12 @@ class SpaceMouseFPV:
             except Exception:
                 pass
             self._sub = None
+        try:
+            cam_prim = self._stage.GetPrimAtPath(CAM_PATH)
+            if cam_prim.IsValid():
+                save_current_camera_settings(cam_prim)
+        except Exception:
+            pass
         carb.log_info("[SpaceMouseFPV] Stopped")
 
     def _write_pose(self):
@@ -201,10 +218,20 @@ class SpaceMouseFPV:
 
         # optional debug
         self._frame += 1
+        if self._frame % self._settings_save_stride == 0:
+            try:
+                cam_prim = self._stage.GetPrimAtPath(CAM_PATH)
+                if cam_prim.IsValid():
+                    self._last_camera_settings = save_camera_settings_if_changed(
+                        cam_prim, self._last_camera_settings
+                    )
+            except Exception:
+                pass
         if DEBUG_EVERY_N and (self._frame % DEBUG_EVERY_N == 0):
             # camera forward in world (local -Z)
             fwd_world = R4.TransformDir(_v3(0, 0, -1))
             carb.log_info(f"[FPV] local_move={local_move} world_move={world_move} fwd_world={fwd_world}")
+
 
 
 # restart cleanly
