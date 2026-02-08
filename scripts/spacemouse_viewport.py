@@ -118,6 +118,8 @@ class SpaceMouseFPV:
             raise RuntimeError("Active camera prim not found yet. Wait and try again.")
         active_cam_xf = UsdGeom.Xformable(active_cam_prim)
         M0 = active_cam_xf.ComputeLocalToWorldTransform(self._vp.time)
+        active_clipping_attr = active_cam_prim.GetAttribute("clippingRange")
+        active_clipping = active_clipping_attr.Get() if active_clipping_attr else None
 
         # ensure camera exists
         if not self._stage.GetPrimAtPath(CAM_PATH).IsValid():
@@ -134,6 +136,12 @@ class SpaceMouseFPV:
 
         # apply saved camera settings (focal length, apertures, clipping, etc.)
         apply_saved_camera_settings(cam_prim)
+        # Always keep clipping plane behavior aligned with current active camera.
+        # This avoids a too-far near clipping plane on SpacemouseCam.
+        if active_clipping is not None:
+            clipping_attr = cam_prim.GetAttribute("clippingRange")
+            if clipping_attr:
+                clipping_attr.Set(active_clipping)
 
         # init pose from previous viewport transform
         self._pos = M0.ExtractTranslation()
